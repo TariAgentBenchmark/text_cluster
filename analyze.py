@@ -16,10 +16,30 @@ def parse_classification(json_string: str) -> Dict[str, List[str]]:
         return {}
 
 
+def should_ignore_primary_label(label: str) -> bool:
+    """Return True if the primary label should be ignored (e.g., 其他/其它/other)."""
+    if not isinstance(label, str):
+        return True
+    normalized = label.strip().lower()
+    # Cover common variants
+    return normalized in {
+        "其他",
+        "其它",
+        "其他类",
+        "其它类",
+        "其他类别",
+        "其它类别",
+        "other",
+        "others",
+    }
+
+
 def iterate_label_pairs(rows: Iterable[Dict[str, str]]) -> Iterable[Tuple[str, str]]:
     for row in rows:
         class_obj = parse_classification(row.get("classification", ""))
         for primary_label, secondary_labels in class_obj.items():
+            if should_ignore_primary_label(primary_label):
+                continue
             if not isinstance(secondary_labels, list):
                 continue
             for secondary_label in secondary_labels:
@@ -38,22 +58,29 @@ def aggregate_counts(df: pd.DataFrame) -> Tuple[Counter, Dict[str, Counter]]:
     return total_by_primary, counts_by_primary_secondary
 
 
-def build_flat_rows(total_by_primary: Counter, counts_by_primary_secondary: Dict[str, Counter]) -> List[Dict[str, object]]:
+def build_flat_rows(
+    total_by_primary: Counter, counts_by_primary_secondary: Dict[str, Counter]
+) -> List[Dict[str, object]]:
     rows: List[Dict[str, object]] = []
+    total_all = sum(total_by_primary.values())
     for primary in sorted(counts_by_primary_secondary.keys()):
-        total = total_by_primary.get(primary, 0)
-        if total == 0:
+        total_primary = int(total_by_primary.get(primary, 0))
+        if total_primary == 0:
             continue
-        for secondary, count in counts_by_primary_secondary[primary].most_common():
-            ratio = count / total
-            rows.append(
-                {
-                    "类别 (一级标签)": primary,
-                    "关键词 (二级标签)": secondary,
-                    "二级标签占比": round(ratio, 4),
-                    "二级标签数量": int(count),
-                }
-            )
+        # Collect all secondary labels for this primary, ordered by frequency desc
+        secondaries_sorted = [
+            s for s, _ in counts_by_primary_secondary[primary].most_common()
+        ]
+        keywords = "、".join(secondaries_sorted)
+        ratio_primary = (total_primary / total_all) if total_all > 0 else 0.0
+        rows.append(
+            {
+                "类别 (一级标签)": primary,
+                "关键词 (二级标签)": keywords,
+                "一级标签占比": round(ratio_primary, 4),
+                "一级标签数量": total_primary,
+            }
+        )
     return rows
 
 
@@ -70,17 +97,22 @@ def analyze(input_csv: str, output_path: str) -> None:
     df = pd.read_csv(input_csv)
     total_by_primary, counts_by_primary_secondary = aggregate_counts(df)
     rows = build_flat_rows(total_by_primary, counts_by_primary_secondary)
-    out_df = pd.DataFrame(rows, columns=[
-        "类别 (一级标签)",
-        "关键词 (二级标签)",
-        "二级标签占比",
-        "二级标签数量",
-    ])
+    out_df = pd.DataFrame(
+        rows,
+        columns=[
+            "类别 (一级标签)",
+            "关键词 (二级标签)",
+            "一级标签占比",
+            "一级标签数量",
+        ],
+    )
     write_output(out_df, output_path)
 
 
 def main() -> None:
-    parser = argparse.ArgumentParser(description="Aggregate classification statistics into a flat table.")
+    parser = argparse.ArgumentParser(
+        description="Aggregate classification statistics into a flat table."
+    )
     parser.add_argument(
         "--input",
         default="test2_classified.csv",
@@ -97,7 +129,3 @@ def main() -> None:
 
 if __name__ == "__main__":
     main()
-
-
-
-
