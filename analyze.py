@@ -1,8 +1,9 @@
 import argparse
 import json
+import random
 from collections import Counter, defaultdict
 from pathlib import Path
-from typing import Dict, Iterable, List, Tuple
+from typing import Dict, Iterable, List, Tuple, Union
 
 import pandas as pd
 
@@ -47,6 +48,42 @@ def iterate_label_pairs(rows: Iterable[Dict[str, str]]) -> Iterable[Tuple[str, s
                     yield primary_label, secondary_label.strip()
 
 
+def collect_examples(df: pd.DataFrame, text_field: str = "ocr") -> Dict[str, List[str]]:
+    """Collect example texts per primary label from the dataframe."""
+    examples_by_primary: Dict[str, List[str]] = defaultdict(list)
+    for row in df.to_dict("records"):
+        class_obj = parse_classification(row.get("classification", ""))
+        text_value = row.get(text_field, "")
+        if not isinstance(text_value, str) or text_value.strip() == "":
+            continue
+        for primary_label in class_obj.keys():
+            if should_ignore_primary_label(primary_label):
+                continue
+            examples_by_primary[primary_label].append(text_value.strip())
+    return examples_by_primary
+
+
+def collect_examples_by_pair(
+    df: pd.DataFrame, text_field: str = "ocr"
+) -> Dict[Tuple[str, str], List[str]]:
+    """Collect example texts per (primary, secondary) pair from the dataframe."""
+    examples_by_pair: Dict[Tuple[str, str], List[str]] = defaultdict(list)
+    for row in df.to_dict("records"):
+        class_obj = parse_classification(row.get("classification", ""))
+        text_value = row.get(text_field, "")
+        if not isinstance(text_value, str) or text_value.strip() == "":
+            continue
+        for primary_label, secondary_labels in class_obj.items():
+            if should_ignore_primary_label(primary_label) or not isinstance(secondary_labels, list):
+                continue
+            for secondary_label in secondary_labels:
+                if isinstance(secondary_label, str) and secondary_label.strip() != "":
+                    examples_by_pair[(primary_label, secondary_label.strip())].append(
+                        text_value.strip()
+                    )
+    return examples_by_pair
+
+
 def aggregate_counts(df: pd.DataFrame) -> Tuple[Counter, Dict[str, Counter]]:
     total_by_primary: Counter = Counter()
     counts_by_primary_secondary: Dict[str, Counter] = defaultdict(Counter)
@@ -59,11 +96,18 @@ def aggregate_counts(df: pd.DataFrame) -> Tuple[Counter, Dict[str, Counter]]:
 
 
 def build_flat_rows(
-    total_by_primary: Counter, counts_by_primary_secondary: Dict[str, Counter]
+    total_by_primary: Counter,
+    counts_by_primary_secondary: Dict[str, Counter],
+    examples_by_primary: Dict[str, List[str]],
 ) -> List[Dict[str, object]]:
     rows: List[Dict[str, object]] = []
     total_all = sum(total_by_primary.values())
-    for primary in sorted(counts_by_primary_secondary.keys()):
+    # Sort by frequency desc, then name asc
+    primaries_sorted = sorted(
+        counts_by_primary_secondary.keys(),
+        key=lambda p: (-int(total_by_primary.get(p, 0)), str(p)),
+    )
+    for primary in primaries_sorted:
         total_primary = int(total_by_primary.get(primary, 0))
         if total_primary == 0:
             continue
@@ -73,40 +117,117 @@ def build_flat_rows(
         ]
         keywords = "、".join(secondaries_sorted)
         ratio_primary = (total_primary / total_all) if total_all > 0 else 0.0
+        # Pick up to 3 random example texts for this primary
+        example_pool = examples_by_primary.get(primary, [])
+        if len(example_pool) <= 3:
+            sampled_examples = example_pool
+        else:
+            sampled_examples = random.sample(example_pool, 3)
+        examples_text = "\n".join(sampled_examples)
         rows.append(
             {
                 "类别 (一级标签)": primary,
                 "关键词 (二级标签)": keywords,
                 "一级标签占比": round(ratio_primary, 4),
                 "一级标签数量": total_primary,
+                "示例文本": examples_text,
             }
         )
     return rows
 
 
-def write_output(df: pd.DataFrame, output_path: str) -> None:
+def build_secondary_rows(
+    total_by_primary: Counter,
+    counts_by_primary_secondary: Dict[str, Counter],
+    examples_by_pair: Dict[Tuple[str, str], List[str]],
+) -> List[Dict[str, object]]:
+    rows: List[Dict[str, object]] = []
+    # Sort primaries by frequency desc, then name asc
+    primaries_sorted = sorted(
+        counts_by_primary_secondary.keys(),
+        key=lambda p: (-int(total_by_primary.get(p, 0)), str(p)),
+    )
+    for primary in primaries_sorted:
+        total_primary = int(total_by_primary.get(primary, 0))
+        if total_primary == 0:
+            continue
+        for secondary, count in counts_by_primary_secondary[primary].most_common():
+            ratio = (count / total_primary) if total_primary > 0 else 0.0
+            example_pool = examples_by_pair.get((primary, secondary), [])
+            if len(example_pool) <= 3:
+                sampled_examples = example_pool
+            else:
+                sampled_examples = random.sample(example_pool, 3)
+            examples_text = "\n".join(sampled_examples)
+            rows.append(
+                {
+                    "一级标签": primary,
+                    "二级标签": secondary,
+                    "二级标签数量": int(count),
+                    "二级标签占比": round(ratio, 4),
+                    "文本示例": examples_text,
+                }
+            )
+    return rows
+
+
+def write_output(
+    df_or_sheets: Union[pd.DataFrame, Dict[str, pd.DataFrame]], output_path: str
+) -> None:
     ext = Path(output_path).suffix.lower()
     if ext in {".xlsx", ".xls"}:
-        df.to_excel(output_path, index=False)
+        if isinstance(df_or_sheets, dict):
+            with pd.ExcelWriter(output_path, engine="openpyxl") as writer:
+                for sheet_name, sheet_df in df_or_sheets.items():
+                    sheet_df.to_excel(writer, sheet_name=sheet_name, index=False)
+        else:
+            df_or_sheets.to_excel(output_path, index=False)
     else:
-        # Default to CSV
-        df.to_csv(output_path, index=False, encoding="utf-8-sig")
+        # Default to CSV (single sheet only)
+        if isinstance(df_or_sheets, dict):
+            first_df = next(iter(df_or_sheets.values()))
+            first_df.to_csv(output_path, index=False, encoding="utf-8-sig")
+        else:
+            df_or_sheets.to_csv(output_path, index=False, encoding="utf-8-sig")
 
 
 def analyze(input_csv: str, output_path: str) -> None:
     df = pd.read_csv(input_csv)
     total_by_primary, counts_by_primary_secondary = aggregate_counts(df)
-    rows = build_flat_rows(total_by_primary, counts_by_primary_secondary)
-    out_df = pd.DataFrame(
-        rows,
+    examples_by_primary = collect_examples(df, text_field="ocr")
+    examples_by_pair = collect_examples_by_pair(df, text_field="ocr")
+    primary_rows = build_flat_rows(
+        total_by_primary, counts_by_primary_secondary, examples_by_primary
+    )
+    secondary_rows = build_secondary_rows(
+        total_by_primary, counts_by_primary_secondary, examples_by_pair
+    )
+    out_primary = pd.DataFrame(
+        primary_rows,
         columns=[
             "类别 (一级标签)",
             "关键词 (二级标签)",
             "一级标签占比",
             "一级标签数量",
+            "示例文本",
         ],
     )
-    write_output(out_df, output_path)
+    out_secondary = pd.DataFrame(
+        secondary_rows,
+        columns=[
+            "一级标签",
+            "二级标签",
+            "二级标签数量",
+            "二级标签占比",
+            "文本示例",
+        ],
+    )
+    # Ensure sorted
+    out_primary = out_primary.sort_values(
+        by=["一级标签数量", "类别 (一级标签)"], ascending=[False, True]
+    )
+    sheets = {"一级统计": out_primary, "二级统计": out_secondary}
+    write_output(sheets, output_path)
 
 
 def main() -> None:
@@ -120,8 +241,8 @@ def main() -> None:
     )
     parser.add_argument(
         "--output",
-        default="classified_stats.csv",
-        help="Output file path (.csv or .xlsx). Defaults to classified_stats.csv",
+        default="classified_stats.xlsx",
+        help="Output file path (.xlsx recommended). Defaults to classified_stats.xlsx",
     )
     args = parser.parse_args()
     analyze(args.input, args.output)
