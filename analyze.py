@@ -111,9 +111,9 @@ def build_flat_rows(
         total_primary = int(total_by_primary.get(primary, 0))
         if total_primary == 0:
             continue
-        # Collect all secondary labels for this primary, ordered by frequency desc
+        # Collect top-10 secondary labels for this primary, ordered by frequency desc
         secondaries_sorted = [
-            s for s, _ in counts_by_primary_secondary[primary].most_common()
+            s for s, _ in counts_by_primary_secondary[primary].most_common(10)
         ]
         keywords = "、".join(secondaries_sorted)
         ratio_primary = (total_primary / total_all) if total_all > 0 else 0.0
