@@ -152,6 +152,9 @@ def build_secondary_rows(
         if total_primary == 0:
             continue
         for secondary, count in counts_by_primary_secondary[primary].most_common():
+            # Skip low-frequency secondary labels (< 5)
+            if int(count) < 5:
+                continue
             ratio = (count / total_primary) if total_primary > 0 else 0.0
             example_pool = examples_by_pair.get((primary, secondary), [])
             if len(example_pool) <= 3:
@@ -225,6 +228,9 @@ def analyze(input_csv: str, output_path: str) -> None:
     # Ensure sorted
     out_primary = out_primary.sort_values(
         by=["一级标签数量", "类别 (一级标签)"], ascending=[False, True]
+    )
+    out_secondary = out_secondary.sort_values(
+        by=["二级标签数量", "一级标签", "二级标签"], ascending=[False, True, True]
     )
     sheets = {"一级统计": out_primary, "二级统计": out_secondary}
     write_output(sheets, output_path)
