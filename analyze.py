@@ -17,6 +17,19 @@ def parse_classification(json_string: str) -> Dict[str, List[str]]:
         return {}
 
 
+def sanitize_secondary_label(label: Union[str, object]) -> str:
+    if not isinstance(label, str):
+        return ""
+    cleaned = label.strip()
+    if cleaned == "":
+        return ""
+    for delimiter in ("：", ":"):
+        if delimiter in cleaned:
+            cleaned = cleaned.split(delimiter, 1)[0].strip()
+            break
+    return cleaned
+
+
 def should_ignore_primary_label(label: str) -> bool:
     """Return True if the primary label should be ignored (e.g., 其他/其它/other)."""
     if not isinstance(label, str):
@@ -44,8 +57,9 @@ def iterate_label_pairs(rows: Iterable[Dict[str, str]]) -> Iterable[Tuple[str, s
             if not isinstance(secondary_labels, list):
                 continue
             for secondary_label in secondary_labels:
-                if isinstance(secondary_label, str) and secondary_label.strip() != "":
-                    yield primary_label, secondary_label.strip()
+                cleaned_secondary = sanitize_secondary_label(secondary_label)
+                if cleaned_secondary:
+                    yield primary_label, cleaned_secondary
 
 
 def collect_examples(df: pd.DataFrame, text_field: str = "ocr") -> Dict[str, List[str]]:
@@ -77,8 +91,9 @@ def collect_examples_by_pair(
             if should_ignore_primary_label(primary_label) or not isinstance(secondary_labels, list):
                 continue
             for secondary_label in secondary_labels:
-                if isinstance(secondary_label, str) and secondary_label.strip() != "":
-                    examples_by_pair[(primary_label, secondary_label.strip())].append(
+                cleaned_secondary = sanitize_secondary_label(secondary_label)
+                if cleaned_secondary:
+                    examples_by_pair[(primary_label, cleaned_secondary)].append(
                         text_value.strip()
                     )
     return examples_by_pair
@@ -115,7 +130,12 @@ def build_flat_rows(
         secondaries_sorted = [
             s for s, _ in counts_by_primary_secondary[primary].most_common(10)
         ]
-        keywords = "、".join(secondaries_sorted)
+        cleaned_keywords: List[str] = []
+        for secondary_label in secondaries_sorted:
+            cleaned_secondary = sanitize_secondary_label(secondary_label)
+            if cleaned_secondary and cleaned_secondary not in cleaned_keywords:
+                cleaned_keywords.append(cleaned_secondary)
+        keywords = "、".join(cleaned_keywords)
         ratio_primary = (total_primary / total_all) if total_all > 0 else 0.0
         # Pick up to 3 random example texts for this primary
         example_pool = examples_by_primary.get(primary, [])
