@@ -47,11 +47,42 @@ uv run python analyze.py --input data/test2_classified.csv --output data/classif
 ```
 
 ### 说明
-- 分析阶段会忽略“其他/其它/other/others”等一级标签。
-- “关键词 (二级标签)”为该一级下所有二级标签（按频次降序，用“、”连接）。
+- 分析阶段会忽略"其他/其它/other/others"等一级标签。
+- "关键词 (二级标签)"为该一级下所有二级标签（按频次降序，用"、"连接）。
 
 
-### 挖掘初始类别体系（利用大模型）
+### 自动挖掘类别体系（推荐）
+
+使用 `discover_categories.py` 从数据中自动挖掘类别体系：
+
+```bash
+uv run python discover_categories.py
+```
+
+**功能说明**：
+- 从 `data/test.csv` 随机采样（默认 10 次，每次 100 条，避免重复）
+- 调用大模型分析每批样本，提取观点类别
+- 最终汇总生成统一的类别体系，保存为 `discovered_categories.json`
+
+**参数配置**（在脚本末尾 `if __name__ == "__main__"` 部分修改）：
+- `sample_size`: 每次采样数量（默认 100）
+- `num_iterations`: 采样次数（默认 10）
+- `text_column`: 文本列名（默认 "ocr"）
+
+**使用挖掘的类别进行分类**：
+
+生成 `discovered_categories.json` 后，直接运行分类脚本即可：
+
+```bash
+uv run python topic_classification.py
+```
+
+分类脚本会自动检测：
+- ✅ 如存在 `discovered_categories.json`，使用挖掘的类别体系
+- ❌ 如不存在，使用脚本中预定义的默认类别体系
+
+
+### 挖掘初始类别体系（手动方式）
 - **目标**: 从样本数据中自动“挖掘/归纳”一套适用的一、二级类别体系，并作为分类 Prompt 的起点。
 - **建议流程**:
   - **随机抽样**: 从原始数据（如 `ocr` 字段）随机抽取 200–500 条短文本。任何能保证随机性的方式均可（如在表格工具中随机、或用一段 Python 采样代码）。

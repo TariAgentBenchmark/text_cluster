@@ -17,7 +17,69 @@ OPENAI_API_BASE = os.getenv("OPENAI_API_BASE")
 OPENAI_MODEL_ID = os.getenv("OPENAI_MODEL_ID")
 
 
-seed_prompt = """
+def load_categories(categories_file: str = "discovered_categories.json") -> Dict[str, List[str]]:
+    """加载挖掘出来的类别体系，如果不存在则返回None"""
+    if os.path.exists(categories_file):
+        print(f"找到挖掘的类别体系文件: {categories_file}")
+        with open(categories_file, "r", encoding="utf-8") as f:
+            categories = json.load(f)
+        print(f"已加载类别体系，共 {len(categories)} 个类别")
+        return categories
+    else:
+        print(f"未找到挖掘的类别体系文件 {categories_file}，将使用默认类别体系")
+        return None
+
+
+def generate_prompt_from_categories(categories: Dict[str, List[str]]) -> str:
+    """根据类别体系生成prompt"""
+    category_text = ""
+    for i, (category_name, viewpoints) in enumerate(categories.items(), 1):
+        category_text += f"{i}. {category_name}\n\n"
+        for viewpoint in viewpoints:
+            category_text += f"{viewpoint}\n"
+        category_text += "\n"
+    
+    prompt_template = f"""{category_text}
+输出格式及要求：
+{{{{
+    "类别1": [观点1...],
+    "类别2": [观点2...],
+    ...
+}}}}
+> 只抽取教案评价中包含的观点，不要抽取教案设计中没有的观点
+> 如果教案评价有其他观点，请归类到其他类别
+> 宁缺毋滥，不要抽取教案设计中没有的观点
+
+<example>
+输入：
+1)从同学们的话语中看到了对壮壮胖的嘲笑,对壮壮的自尊心有很大的打打击★壮壮与同学们争论起来而使场面积控.★在张老师方面从选最减的打到选最胖的壮壮从而形成了对照组★内容星★小时候并没有意识★的制止★(2)从学生的兴趣方面,要有足够吸引学生眼球的内容让学生注意力集中★行为举止,向学生感兴趣的方向引导★
+
+输出：
+{{{{
+  "教师行为问题类": ["缺乏教育机智"],
+  "学生权益保护类": ["自尊心受损"],
+  "课堂教学问题类": ["注意力转移", "课堂管理失当"]
+}}}}
+</example>
+
+
+请你判断下面这段教案设计评价中包含上述哪些观点，以json格式返回，json格式如下：
+教案评价内容：
+{{text}}
+
+{{{{
+    "类别1": [观点1...],
+    "类别2": [观点2...],
+    ...
+}}}}
+> 只抽取教案评价中包含的观点，不要抽取教案设计中没有的观点
+> 如果教案评价有其他观点，请归类到其他类别
+> 宁缺毋滥，不要抽取教案设计中没有的观点
+"""
+    return prompt_template
+
+
+default_seed_prompt = """
 1. 教师行为问题类
 
 备课不充分：没有充分考虑学生个体差异，缺乏突发情况预案
@@ -109,9 +171,25 @@ seed_prompt = """
 """
 
 
+def get_classification_prompt() -> str:
+    """获取分类prompt，优先使用挖掘的类别体系"""
+    categories = load_categories()
+    if categories:
+        return generate_prompt_from_categories(categories)
+    else:
+        return default_seed_prompt
+
+
+# 初始化时加载prompt
+print("=" * 60)
+print("初始化分类prompt...")
+CLASSIFICATION_PROMPT = get_classification_prompt()
+print("=" * 60)
+
+
 def classify_text(text: str) -> Dict[str, List[str]]:
     """使用OpenAI API对文本进行分类"""
-    prompt = seed_prompt.format(text=text)
+    prompt = CLASSIFICATION_PROMPT.format(text=text)
 
     headers = {
         "Content-Type": "application/json",
